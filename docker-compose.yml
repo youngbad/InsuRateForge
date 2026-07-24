@@ -1,0 +1,215 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rateforge}
+      POSTGRES_USER: ${POSTGRES_USER:-rateforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rateforge}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rateforge} -d ${POSTGRES_DB:-rateforge}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rateforge
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rateforge
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-rateforge}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-rateforge}
+    ports:
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rateforge
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      RATEFORGE_DATABASE_URL: ${DATABASE_URL:-postgresql://rateforge:rateforge@postgres:5432/rateforge}
+      RATEFORGE_REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RATEFORGE_RABBITMQ_URL: ${RABBITMQ_URL:-amqp://rateforge:rateforge@rabbitmq:5672//}
+      RATEFORGE_SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      RATEFORGE_JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      RATEFORGE_ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      RATEFORGE_ENVIRONMENT: ${ENVIRONMENT:-production}
+      RATEFORGE_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
+      RATEFORGE_LOG_JSON: "true"
+      RATEFORGE_DB_AUTO_CREATE: "true"
+      RATEFORGE_DB_ECHO: ${DEBUG:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    expose:
+      - "9090"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rateforge
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      RATEFORGE_DATABASE_URL: ${DATABASE_URL:-postgresql://rateforge:rateforge@postgres:5432/rateforge}
+      RATEFORGE_REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RATEFORGE_RABBITMQ_URL: ${RABBITMQ_URL:-amqp://rateforge:rateforge@rabbitmq:5672//}
+      RATEFORGE_SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      RATEFORGE_JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      RATEFORGE_ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      RATEFORGE_ENVIRONMENT: ${ENVIRONMENT:-production}
+      RATEFORGE_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
+      RATEFORGE_LOG_JSON: "true"
+      RATEFORGE_DB_AUTO_CREATE: "false"
+      RATEFORGE_DB_ECHO: ${DEBUG:-false}
+    command: ["dramatiq", "rateforge.infrastructure.messaging.tasks"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - rateforge
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - rateforge
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    ports:
+      - "80:80"
+    volumes:
+      - ./infrastructure/nginx/docker.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - rateforge
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    expose:
+      - "9100"
+    networks:
+      - rateforge
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-rateforge}:${POSTGRES_PASSWORD:-rateforge}@postgres:5432/${POSTGRES_DB:-rateforge}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "9187"
+    networks:
+      - rateforge
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      backend:
+        condition: service_healthy
+      node-exporter:
+        condition: service_started
+      postgres-exporter:
+        condition: service_started
+    networks:
+      - rateforge
+
+  grafana:
+    image: grafana/grafana-oss:11.1.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-rateforge-admin}
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_started
+    networks:
+      - rateforge
+
+networks:
+  rateforge:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
