@@ -1,0 +1,56 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.1
+    hooks:
+      - id: ruff
+        name: ruff-check
+        files: ^backend/
+        args: ["--fix", "--config", "backend/pyproject.toml"]
+      - id: ruff-format
+        name: ruff-format
+        files: ^backend/
+        args: ["--config", "backend/pyproject.toml"]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.1
+    hooks:
+      - id: mypy
+        files: ^backend/
+        args: ["--config-file", "backend/pyproject.toml"]
+        additional_dependencies:
+          - alembic==1.13.2
+          - asyncpg==0.29.0
+          - dramatiq[rabbitmq]==1.17.0
+          - email-validator==2.2.0
+          - fastapi==0.115.0
+          - opentelemetry-api==1.26.0
+          - opentelemetry-exporter-otlp==1.26.0
+          - opentelemetry-instrumentation-fastapi==0.47b0
+          - opentelemetry-instrumentation-sqlalchemy==0.47b0
+          - opentelemetry-sdk==1.26.0
+          - passlib[bcrypt]==1.7.4
+          - prometheus-client==0.20.0
+          - pydantic-settings==2.4.0
+          - python-jose[cryptography]==3.3.0
+          - python-multipart==0.0.9
+          - redis==5.0.8
+          - sqlalchemy==2.0.32
+          - structlog==24.4.0
+          - uvicorn==0.30.6
+
+  - repo: local
+    hooks:
+      - id: frontend-eslint
+        name: frontend-eslint
+        entry: bash -c 'cd frontend && npm ci --legacy-peer-deps && npm run lint'
+        language: system
+        pass_filenames: false
+        files: ^frontend/
