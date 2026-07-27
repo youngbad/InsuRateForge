@@ -148,7 +148,7 @@ services:
       - --path.rootfs=/host
     pid: host
     volumes:
-      - /:/host:ro,rslave
+      - /:/host:ro
     expose:
       - "9100"
     networks:
